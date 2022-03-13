@@ -13,9 +13,10 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/log"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/metrics"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
-	logf "sigs.k8s.io/controller-runtime/pkg/runtime/log"
 )
 
 const (
@@ -101,16 +102,18 @@ func (h *Handler) HandleNode(instance *corev1.Node) (reconcile.Result, error) {
 	log := logf.Log.WithName("nidhogg")
 
 	//check whether node matches the nodeSelector
+	log.Info("checking if node matches label", "Selector", h.config.Selector, "labels", instance.Labels)
 	if !h.config.Selector.Matches(labels.Set(instance.Labels)) {
+		log.Info("selector does not match the label")
 		return reconcile.Result{}, nil
 	}
-
+	log.Info("calculating taints")
 	nodeCopy, taintChanges, err := h.calculateTaints(instance)
 	if err != nil {
 		taintOperationErrors.WithLabelValues("calculateTaints").Inc()
 		return reconcile.Result{}, fmt.Errorf("error caluclating taints for node: %v", err)
 	}
-
+	log.Info("taintChanges", "taintChanges", taintChanges)
 	taintLess := true
 	for _, taint := range nodeCopy.Spec.Taints {
 		if strings.HasPrefix(taint.Key, taintKey) {
@@ -172,23 +175,27 @@ func (h *Handler) calculateTaints(instance *corev1.Node) (*corev1.Node, taintCha
 			taintsToRemove[taint.Key] = struct{}{}
 		}
 	}
+	log.Log.Info("Existing taints", "taintsToRemove", taintsToRemove)
 	for _, daemonset := range h.config.Daemonsets {
-
+		log.Log.Info("Analyzing daemonset", "daemonset", daemonset)
 		taint := fmt.Sprintf("%s/%s.%s", taintKey, daemonset.Namespace, daemonset.Name)
 		// Get Pod for node
 		pod, err := h.getDaemonsetPod(instance.Name, daemonset)
 		if err != nil {
 			return nil, taintChanges{}, fmt.Errorf("error fetching pods: %v", err)
 		}
+		log.Log.Info("retrieved pod for daemonset", "pod", pod)
 
 		if pod != nil && podReady(pod) {
 			// if the taint is in the taintsToRemove map, it'll be removed
+			log.Log.Info("Taint should be removed for pod", "pod", pod)
 			continue
 		}
 		// pod doesn't exist or is not ready
 		_, ok := taintsToRemove[taint]
 		if ok {
 			// we want to keep this already existing taint on it
+			log.Log.Info("Keeping taint", "taint", taint)
 			delete(taintsToRemove, taint)
 			continue
 		}
@@ -196,24 +203,28 @@ func (h *Handler) calculateTaints(instance *corev1.Node) (*corev1.Node, taintCha
 		changes.taintsAdded = append(changes.taintsAdded, taint)
 		nodeCopy.Spec.Taints = addTaint(nodeCopy.Spec.Taints, taint)
 	}
+	log.Log.Info("Finished analyzing daemonsets", "taintsToRemove", taintsToRemove)
 	for taint := range taintsToRemove {
 		nodeCopy.Spec.Taints = removeTaint(nodeCopy.Spec.Taints, taint)
 		changes.taintsRemoved = append(changes.taintsRemoved, taint)
 	}
+	log.Log.Info("Final changes", "changes", changes)
 	return nodeCopy, changes, nil
 }
 
 func (h *Handler) getDaemonsetPod(nodeName string, ds Daemonset) (*corev1.Pod, error) {
 	opts := client.InNamespace(ds.Namespace)
 	pods := &corev1.PodList{}
-	err := h.List(context.TODO(), opts, pods)
+	err := h.List(context.TODO(), pods, opts)
 	if err != nil {
 		return nil, err
 	}
-
+	log.Log.Info("looking for pods from daemonset", "podsItems", pods.Items)
 	for _, pod := range pods.Items {
 		for _, owner := range pod.OwnerReferences {
+			log.Log.Info("pod ownerRef", "pod", pod.Name, "owner", owner, "daemonset", ds.Name)
 			if owner.Name == ds.Name {
+				log.Log.Info("matching nodename", "pod", pod.Spec.NodeName, "nodeName", nodeName)
 				if pod.Spec.NodeName == nodeName {
 					return &pod, nil
 				}
@@ -225,8 +236,9 @@ func (h *Handler) getDaemonsetPod(nodeName string, ds Daemonset) (*corev1.Pod, e
 }
 
 func podReady(pod *corev1.Pod) bool {
+	log.Log.Info("checking if pod is ready", "pod", pod, "status", pod.Status)
 	for _, status := range pod.Status.ContainerStatuses {
-		if status.Ready == false {
+		if !status.Ready {
 			return false
 		}
 	}

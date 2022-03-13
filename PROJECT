@@ -1,3 +1,11 @@
-version: "1"
 domain: uswitch.com
+layout:
+- go.kubebuilder.io/v3
+projectName: nidhogg
 repo: github.com/uswitch/nidhogg
+resources:
+- controller: true
+  domain: uswitch.com
+  kind: Node
+  version: v1
+version: "3"

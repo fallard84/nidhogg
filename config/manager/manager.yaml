@@ -3,112 +3,70 @@ kind: Namespace
 metadata:
   labels:
     control-plane: controller-manager
-    controller-tools.k8s.io: "1.0"
   name: system
 ---
-apiVersion: v1
-kind: Service
-metadata:
-  name: controller-manager-service
-  namespace: system
-  labels:
-    control-plane: controller-manager
-    controller-tools.k8s.io: "1.0"
-spec:
-  selector:
-    control-plane: controller-manager
-    controller-tools.k8s.io: "1.0"
-  ports:
-  - port: 443
----
 apiVersion: apps/v1
-kind: StatefulSet
+kind: Deployment
 metadata:
   name: controller-manager
   namespace: system
   labels:
     control-plane: controller-manager
-    controller-tools.k8s.io: "1.0"
 spec:
-  replicas: 2
   selector:
     matchLabels:
       control-plane: controller-manager
-      controller-tools.k8s.io: "1.0"
-  serviceName: controller-manager-service
+  replicas: 1
   template:
     metadata:
+      annotations:
+        kubectl.kubernetes.io/default-container: manager
       labels:
         control-plane: controller-manager
-        controller-tools.k8s.io: "1.0"
     spec:
+      tolerations:
+      - operator: Exists
+      securityContext:
+        runAsNonRoot: true
       containers:
       - command:
         - /manager
-        image: controller:latest
-        imagePullPolicy: Always
-        name: manager
         args:
-         - --config-file=/config/config.json
-         - --leader-election
-         - --leader-namespace=nidhogg-system
-         - --leader-configmap=nidhogg-election
-        env:
-          - name: POD_NAMESPACE
-            valueFrom:
-              fieldRef:
-                fieldPath: metadata.namespace
-          - name: SECRET_NAME
-            value: $(WEBHOOK_SECRET_NAME)
+        - --leader-elect
+        - --config-file=/config/config.yaml
+        image: controller:latest
+        name: manager
+        securityContext:
+          allowPrivilegeEscalation: false
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 8081
+          initialDelaySeconds: 15
+          periodSeconds: 20
+        readinessProbe:
+          httpGet:
+            path: /readyz
+            port: 8081
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        # TODO(user): Configure the resources accordingly based on the project requirements.
+        # More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
         resources:
           limits:
-            memory: 200Mi
+            cpu: 500m
+            memory: 128Mi
           requests:
-            cpu: 100m
-            memory: 100Mi
-        ports:
-        - containerPort: 9876
-          name: webhook-server
-          protocol: TCP
+            cpu: 10m
+            memory: 64Mi
         volumeMounts:
-        - mountPath: /tmp/cert
-          name: cert
-          readOnly: true
-        - mountPath: /config
-          name: config
-          readOnly: true
+          - mountPath: /config
+            name: config
+            readOnly: true
+      serviceAccountName: controller-manager
       terminationGracePeriodSeconds: 10
       volumes:
-      - name: cert
-        secret:
-          defaultMode: 420
-          secretName: webhook-server-secret
-      - name: config
-        configMap:
-          defaultMode: 420
-          name: config
----
-apiVersion: v1
-kind: Secret
-metadata:
-  name: webhook-server-secret
-  namespace: system
----
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: config
-  namespace: system
-data:
-  config.json: |
-     {
-       "nodeSelector": [
-         "node-role.kubernetes.io/node"
-       ],
-       "daemonsets": [
-         {
-           "name": "kiam",
-           "namespace": "kube-system"
-         }
-       ]
-     }
+        - name: config
+          configMap:
+            defaultMode: 420
+            name: config
