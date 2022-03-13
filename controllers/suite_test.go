@@ -20,6 +20,10 @@ import (
 	"path/filepath"
 	"testing"
 
+	ctrl "sigs.k8s.io/controller-runtime"
+
+	"uswitch.com/nidhogg/pkg/nidhogg"
+
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
 	"k8s.io/client-go/kubernetes/scheme"
@@ -66,6 +70,27 @@ var _ = BeforeSuite(func() {
 	Expect(err).NotTo(HaveOccurred())
 	Expect(k8sClient).NotTo(BeNil())
 
+	// https://book.kubebuilder.io/cronjob-tutorial/writing-tests.html
+	k8sManager, err := ctrl.NewManager(cfg, ctrl.Options{
+		Scheme: scheme.Scheme,
+	})
+	Expect(err).ToNot(HaveOccurred())
+
+	err = (&NodeReconciler{
+		Handler: nidhogg.NewHandler(k8sManager.GetClient(), k8sManager.GetEventRecorderFor("nidhogg"), nidhogg.HandlerConfig{
+			Daemonsets: []nidhogg.Daemonset{{
+				Name:      "mandatory-ds",
+				Namespace: "kube-system",
+			}},
+		}),
+		Scheme: k8sManager.GetScheme(),
+	}).SetupWithManager(k8sManager)
+	Expect(err).ToNot(HaveOccurred())
+
+	go func() {
+		err = k8sManager.Start(ctrl.SetupSignalHandler())
+		Expect(err).ToNot(HaveOccurred())
+	}()
 }, 60)
 
 var _ = AfterSuite(func() {
